@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Email Performance — Heavy / EntertainmentNow</title>
+<meta name="robots" content="noindex" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --ink: #17191e;
+    --muted: #6b7077;
+    --paper: #eff0f2;
+    --card: #ffffff;
+    --line: #dcdee2;
+    --accent: #17191e;        /* re-skinned by brand toggle */
+    --accent-soft: #e7e8ea;
+    --up: #1a7f4b;
+    --down: #c03221;
+    --radius: 10px;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+    --body: "Inter", system-ui, sans-serif;
+    --display: "Barlow Condensed", var(--body);
+  }
+  [data-brand="sports"]        { --accent: #d31921; --accent-soft: #fbe9ea; }
+  [data-brand="entertainment"] { --accent: #7038d6; --accent-soft: #f0e9fb; }
+
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: var(--body);
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  a { color: inherit; }
+
+  /* ---- Masthead ---- */
+  header {
+    background: var(--card);
+    border-bottom: 3px solid var(--accent);
+    transition: border-color .25s;
+  }
+  .masthead {
+    max-width: 1180px; margin: 0 auto; padding: 18px 20px 14px;
+    display: flex; flex-wrap: wrap; gap: 14px 24px; align-items: center; justify-content: space-between;
+  }
+  h1 {
+    font-family: var(--display);
+    font-weight: 700; font-size: 28px; letter-spacing: .02em;
+    text-transform: uppercase; line-height: 1;
+  }
+  h1 small {
+    display: block; font-family: var(--body); font-weight: 500;
+    font-size: 11px; letter-spacing: .08em; color: var(--muted);
+    text-transform: uppercase; margin-top: 4px;
+  }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+  .seg { display: inline-flex; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
+  .seg button {
+    font-family: var(--display); font-weight: 600; font-size: 15px;
+    letter-spacing: .04em; text-transform: uppercase;
+    border: 0; background: transparent; color: var(--muted);
+    padding: 6px 14px; border-radius: 6px; cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+
+  select, .btn {
+    font: 500 13px var(--body); color: var(--ink);
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 12px; cursor: pointer;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  main { max-width: 1180px; margin: 0 auto; padding: 22px 20px 60px; }
+
+  .meta { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  .meta b { color: var(--ink); font-weight: 600; }
+
+  /* ---- Stat cards ---- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 26px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px 12px;
+  }
+  .card .label {
+    font-size: 11px; font-weight: 600; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .card .value {
+    font-family: var(--mono); font-weight: 600; font-size: 26px;
+    margin: 6px 0 4px; font-variant-numeric: tabular-nums;
+  }
+  .delta {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    padding: 1px 7px; border-radius: 99px;
+  }
+  .delta.up   { color: var(--up);   background: #e6f4ec; }
+  .delta.down { color: var(--down); background: #f9e9e6; }
+  .delta.flat { color: var(--muted); background: var(--paper); }
+  .card .vs { font-size: 11px; color: var(--muted); margin-left: 6px; }
+
+  /* ---- Table ---- */
+  .tablewrap { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 880px; }
+  thead th {
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); text-align: right; padding: 10px 12px;
+    border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; white-space: nowrap;
+  }
+  thead th.l { text-align: left; }
+  thead th[aria-sort] { color: var(--accent); }
+  tbody td {
+    padding: 9px 12px; border-bottom: 1px solid var(--paper);
+    font-family: var(--mono); font-size: 13px; text-align: right;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  tbody td.l { text-align: left; font-family: var(--body); }
+  tbody tr:hover { background: var(--accent-soft); }
+  td .name { font-weight: 600; max-width: 380px; overflow: hidden; text-overflow: ellipsis; display: block; }
+  td .name a { text-decoration: none; }
+  td .name a:hover { text-decoration: underline; }
+  .pill {
+    font: 600 10px var(--body); letter-spacing: .06em; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 99px; color: #fff;
+  }
+  .pill.sports { background: #d31921; }
+  .pill.entertainment { background: #7038d6; }
+
+  .state { padding: 60px 20px; text-align: center; color: var(--muted); }
+  .state .spin {
+    width: 26px; height: 26px; margin: 0 auto 12px;
+    border: 3px solid var(--line); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+  .state.error { color: var(--down); }
+</style>
+</head>
+<body data-brand="all">
+
+<header>
+  <div class="masthead">
+    <h1>Email Performance<small>Heavy &amp; EntertainmentNow · Campaign Monitor live</small></h1>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="Brand">
+        <button data-b="all" aria-pressed="true">All</button>
+        <button data-b="sports" aria-pressed="false">Sports</button>
+        <button data-b="entertainment" aria-pressed="false">Entertainment</button>
+      </div>
+      <select id="period" aria-label="Period">
+        <option value="7">Last 7 days</option>
+        <option value="14">Last 14 days</option>
+        <option value="28" selected>Last 28 days</option>
+      </select>
+      <button class="btn" id="refresh">Refresh data</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="meta" id="meta"></div>
+  <div class="cards" id="cards"></div>
+  <div class="tablewrap">
+    <table id="table" hidden>
+      <thead><tr id="headrow"></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="state" id="state"><div class="spin"></div>Pulling campaigns from Campaign Monitor…</div>
+  </div>
+</main>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  let brand = 'all';
+  let days = 28;
+  let data = null; // { campaigns, cachedAt, from, to, truncated }
+  let sortKey = 'sentDate', sortDir = -1;
+
+  const COLS = [
+    { k: 'sentDate',   label: 'Sent',      l: true,  fmt: (v) => new Date(v).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) },
+    { k: 'name',       label: 'Campaign',  l: true },
+    { k: 'brand',      label: 'Brand',     l: true },
+    { k: 'recipients', label: 'Sends',     fmt: num },
+    { k: 'uniqueOpens',label: 'Opens',     fmt: num },
+    { k: 'openRate',   label: 'Open rate', fmt: pct },
+    { k: 'clicks',     label: 'Clicks',    fmt: num },
+    { k: 'ctr',        label: 'CTR',       fmt: pct },
+    { k: 'unsubscribes', label: 'Unsubs',  fmt: num },
+  ];
+
+  function num(v) { return v.toLocaleString(); }
+  function pct(v) { return (v * 100).toFixed(2) + '%'; }
+  function dstr(d) { return d.toISOString().slice(0, 10); }
+
+  async function load(refresh = false) {
+    $('#table').hidden = true;
+    $('#state').className = 'state';
+    $('#state').innerHTML = '<div class="spin"></div>Pulling campaigns from Campaign Monitor…';
+    $('#state').hidden = false;
+
+    const to = new Date();
+    const from = new Date(Date.now() - (2 * days - 1) * 86400000); // current + comparison window
+    const qs = new URLSearchParams({ from: dstr(from), to: dstr(to) });
+    if (refresh) qs.set('refresh', '1');
+
+    const headers = {};
+    const key = sessionStorage.getItem('dashKey');
+    if (key) headers['x-dashboard-key'] = key;
+
+    try {
+      const r = await fetch('/api/campaigns?' + qs, { headers });
+      if (r.status === 401) {
+        const pw = prompt('Dashboard password:');
+        if (pw) { sessionStorage.setItem('dashKey', pw); return load(refresh); }
+        throw new Error('A password is required to view this dashboard.');
+      }
+      const json = await r.json();
+      if (!r.ok) throw new Error(json.error || 'Request failed (' + r.status + ')');
+      data = json;
+      render();
+    } catch (e) {
+      $('#state').className = 'state error';
+      $('#state').textContent = e.message;
+      $('#cards').innerHTML = '';
+      $('#meta').textContent = '';
+    }
+  }
+
+  function render() {
+    if (!data) return;
+    const cutoff = Date.now() - days * 86400000;
+    const inBrand = (c) => brand === 'all' || c.brand === brand;
+    const current = data.campaigns.filter((c) => inBrand(c) && new Date(c.sentDate).getTime() >= cutoff);
+    const previous = data.campaigns.filter((c) => inBrand(c) && new Date(c.sentDate).getTime() < cutoff);
+
+    renderMeta(current);
+    renderCards(agg(current), agg(previous));
+    renderTable(current);
+  }
+
+  function agg(rows) {
+    const t = rows.reduce((a, c) => {
+      a.campaigns += 1; a.recipients += c.recipients; a.uniqueOpens += c.uniqueOpens;
+      a.clicks += c.clicks; a.unsubscribes += c.unsubscribes; return a;
+    }, { campaigns: 0, recipients: 0, uniqueOpens: 0, clicks: 0, unsubscribes: 0 });
+    t.openRate = t.recipients ? t.uniqueOpens / t.recipients : 0;
+    t.ctr = t.recipients ? t.clicks / t.recipients : 0;
+    return t;
+  }
+
+  function deltaChip(cur, prev, isRate) {
+    if (!prev && !cur) return '<span class="delta flat">—</span>';
+    let txt, dir;
+    if (isRate) {
+      const pp = (cur - prev) * 100;
+      dir = pp > 0.005 ? 'up' : pp < -0.005 ? 'down' : 'flat';
+      txt = (pp > 0 ? '▲ +' : pp < 0 ? '▼ ' : '') + pp.toFixed(2) + 'pp';
+    } else {
+      if (!prev) return '<span class="delta flat">new</span>';
+      const ch = ((cur - prev) / prev) * 100;
+      dir = ch > 0.5 ? 'up' : ch < -0.5 ? 'down' : 'flat';
+      txt = (ch > 0 ? '▲ +' : ch < 0 ? '▼ ' : '') + ch.toFixed(1) + '%';
+    }
+    return `<span class="delta ${dir}">${txt}</span>`;
+  }
+
+  function renderCards(cur, prev) {
+    const defs = [
+      { label: 'Campaigns sent', v: num(cur.campaigns),  d: deltaChip(cur.campaigns, prev.campaigns) },
+      { label: 'Total sends',    v: num(cur.recipients), d: deltaChip(cur.recipients, prev.recipients) },
+      { label: 'Open rate',      v: pct(cur.openRate),   d: deltaChip(cur.openRate, prev.openRate, true) },
+      { label: 'Total clicks',   v: num(cur.clicks),     d: deltaChip(cur.clicks, prev.clicks) },
+      { label: 'CTR',            v: pct(cur.ctr),        d: deltaChip(cur.ctr, prev.ctr, true) },
+    ];
+    $('#cards').innerHTML = defs.map((c) => `
+      <div class="card">
+        <div class="label">${c.label}</div>
+        <div class="value">${c.v}</div>
+        ${c.d}<span class="vs">vs prior ${days}d</span>
+      </div>`).join('');
+  }
+
+  function renderMeta(current) {
+    const age = data.cachedAt ? Math.round((Date.now() - data.cachedAt) / 60000) : 0;
+    $('#meta').innerHTML =
+      `Showing <b>${current.length}</b> campaigns from the last <b>${days} days</b>` +
+      (brand !== 'all' ? ` · <b>${brand === 'sports' ? 'Heavy Sports' : 'EntertainmentNow'}</b>` : '') +
+      ` · data ${data.fromCache ? `cached ${age || '<1'}m ago` : 'fetched just now'}` +
+      (data.truncated ? ' · <b style="color:var(--down)">window truncated at 250 campaigns — narrow the range</b>' : '');
+  }
+
+  function renderTable(rows) {
+    const sorted = [...rows].sort((a, b) => {
+      const va = a[sortKey], vb = b[sortKey];
+      return (va > vb ? 1 : va < vb ? -1 : 0) * sortDir;
+    });
+
+    $('#headrow').innerHTML = COLS.map((c) =>
+      `<th class="${c.l ? 'l' : ''}" data-k="${c.k}" ${sortKey === c.k ? `aria-sort="${sortDir === 1 ? 'ascending' : 'descending'}"` : ''}>
+        ${c.label}${sortKey === c.k ? (sortDir === 1 ? ' ↑' : ' ↓') : ''}</th>`).join('');
+
+    $('#tbody').innerHTML = sorted.map((r) => `<tr>${COLS.map((c) => {
+      if (c.k === 'name') {
+        const inner = r.webVersionUrl
+          ? `<a href="${r.webVersionUrl}" target="_blank" rel="noopener" title="${esc(r.subject)}">${esc(r.name)}</a>`
+          : esc(r.name);
+        return `<td class="l"><span class="name">${inner}</span></td>`;
+      }
+      if (c.k === 'brand') {
+        return `<td class="l"><span class="pill ${r.brand}">${r.brand === 'sports' ? 'Heavy' : 'EntNow'}</span></td>`;
+      }
+      return `<td class="${c.l ? 'l' : ''}">${c.fmt ? c.fmt(r[c.k]) : r[c.k]}</td>`;
+    }).join('')}</tr>`).join('');
+
+    $('#headrow').querySelectorAll('th').forEach((th) => th.addEventListener('click', () => {
+      const k = th.dataset.k;
+      if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = -1; }
+      renderTable(rows);
+    }));
+
+    $('#state').hidden = true;
+    $('#table').hidden = rows.length === 0;
+    if (rows.length === 0) {
+      $('#state').hidden = false;
+      $('#state').className = 'state';
+      $('#state').textContent = 'No campaigns sent in this window. Widen the period or switch brands.';
+    }
+  }
+
+  function esc(s) { return String(s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+  // Controls
+  document.querySelectorAll('.seg button').forEach((b) => b.addEventListener('click', () => {
+    brand = b.dataset.b;
+    document.querySelectorAll('.seg button').forEach((x) => x.setAttribute('aria-pressed', x === b));
+    document.body.dataset.brand = brand;
+    render();
+  }));
+  $('#period').addEventListener('change', (e) => { days = +e.target.value; load(); });
+  $('#refresh').addEventListener('click', () => load(true));
+
+  load();
+})();
+</script>
+</body>
+</html>
