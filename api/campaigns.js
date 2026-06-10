@@ -159,31 +159,56 @@ module.exports = async (req, res) => {
 
     const days = Math.min(Math.max(parseInt(req.query.days, 10) || 28, 1), 60);
 
-    // Explicit period boundaries, computed once, server-side.
-    const now = new Date();
-    const currentFrom = new Date(now.getTime() - days * 86400000);
-    const previousFrom = new Date(now.getTime() - 2 * days * 86400000);
+    // ---- Period boundaries, by calendar date, ending on the last COMPLETE
+    // day. Today's in-flight sends are excluded so rates aren't dragged down
+    // by partial data. All math is done on date strings (YYYY-MM-DD) to match
+    // how Campaign Monitor reports SentDate (the client account's timezone).
+    // REPORT_TIMEZONE controls what counts as "today" (default Eastern).
+    const tz = process.env.REPORT_TIMEZONE || 'America/New_York';
+    const todayStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date()); // "YYYY-MM-DD"
 
-    const cacheKey = `d${days}`;
+    function shiftDate(ymd, deltaDays) {
+      const [y, m, d] = ymd.split('-').map(Number);
+      return new Date(Date.UTC(y, m - 1, d + deltaDays)).toISOString().slice(0, 10);
+    }
+
+    const currentTo = shiftDate(todayStr, -1);                // yesterday (last full day)
+    const currentFrom = shiftDate(currentTo, -(days - 1));    // inclusive
+    const previousTo = shiftDate(currentFrom, -1);            // inclusive
+    const previousFrom = shiftDate(currentFrom, -days);       // inclusive
+
+    const cacheKey = `d${days}|${currentTo}`;
     const forceRefresh = req.query.refresh === '1';
     const hit = responseCache.get(cacheKey);
     if (hit && !forceRefresh && Date.now() - hit.ts < RESPONSE_TTL) {
       return res.status(200).json({ ...hit.payload, cachedAt: hit.ts, fromCache: true });
     }
 
-    const sent = await fetchSentCampaigns(CM_API_KEY, CM_CLIENT_ID, previousFrom, now);
+    const sent = await fetchSentCampaigns(
+      CM_API_KEY,
+      CM_CLIENT_ID,
+      new Date(`${previousFrom}T00:00:00`),
+      new Date(`${currentTo}T23:59:59`)
+    );
 
-    // Classify, exclude AhoraMismo, and tag each campaign with its period.
+    // Classify, exclude AhoraMismo, and tag each campaign with its period by
+    // calendar send date. Anything sent today (or outside the window) is dropped.
     const tagged = [];
     for (const c of sent) {
       const brand = classify(c.Name, c.Subject);
       if (brand === 'excluded') continue;
-      const sentAt = parseSentDate(c.SentDate);
+      const sentDateStr = String(c.SentDate).slice(0, 10);
+      let period = null;
+      if (sentDateStr >= currentFrom && sentDateStr <= currentTo) period = 'current';
+      else if (sentDateStr >= previousFrom && sentDateStr <= previousTo) period = 'previous';
+      if (!period) continue;
       tagged.push({
         raw: c,
         brand,
-        sentAt,
-        period: sentAt >= currentFrom ? 'current' : 'previous',
+        sentAt: parseSentDate(c.SentDate),
+        period,
       });
     }
 
@@ -239,8 +264,8 @@ module.exports = async (req, res) => {
 
     const payload = {
       days,
-      currentPeriod: { from: fmtDate(currentFrom), to: fmtDate(now) },
-      previousPeriod: { from: fmtDate(previousFrom), to: fmtDate(currentFrom) },
+      currentPeriod: { from: currentFrom, to: currentTo },
+      previousPeriod: { from: previousFrom, to: previousTo },
       counts: {
         current: curList.length,
         previous: prevList.length,
