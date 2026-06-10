@@ -21,9 +21,12 @@ const EXCLUDE_PATTERNS = [
 ];
 
 const ENTERTAINMENT_PATTERNS = [
-  /entertainment/i,
+  /entertainment/i,        // "Netflix Entertainment Now!", "EntertainmentNow", etc.
   /entnow/i,
-  /^EN[\s\-_:]/, // campaigns prefixed "EN - ..." etc.
+  /now!/i,                 // the "...Now!" newsletter family (AGT Now!, Survivor Now!,
+                           // Hallmark Now!, Breaking News Now!, etc.)
+  /90s\s*tv\s*stars\s*now/i, // the one family member without the exclamation mark
+  /hgtv/i,                 // "HGTV News!" doesn't follow the Now! convention
 ];
 
 function classify(name, subject) {
