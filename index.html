@@ -186,9 +186,9 @@
         <button data-b="entertainment" aria-pressed="false">Entertainment</button>
       </div>
       <select id="period" aria-label="Period">
-        <option value="7">Last 7 days</option>
-        <option value="14">Last 14 days</option>
-        <option value="28" selected>Last 28 days</option>
+        <option value="7">Last 7 full days</option>
+        <option value="14">Last 14 full days</option>
+        <option value="28" selected>Last 28 full days</option>
       </select>
       <button class="btn" id="refresh">Refresh data</button>
     </div>
@@ -399,7 +399,7 @@
     const age = data.cachedAt ? Math.round((Date.now() - data.cachedAt) / 60000) : 0;
     const dropped = data.counts && data.counts.droppedForRateLimit;
     $('#meta').innerHTML =
-      `<b>${current.length}</b> campaigns ${data.currentPeriod.from} → ${data.currentPeriod.to}` +
+      `<b>${current.length}</b> campaigns ${data.currentPeriod.from} → ${data.currentPeriod.to} (today's in-flight sends excluded)` +
       ` · compared against <b>${previous.length}</b> from ${data.previousPeriod.from} → ${data.previousPeriod.to}` +
       (brand !== 'all' ? ` · <b>${brand === 'sports' ? 'Heavy Sports' : 'EntertainmentNow'}</b>` : '') +
       ` · data ${data.fromCache ? `cached ${age || '<1'}m ago` : 'fetched just now'}` +
