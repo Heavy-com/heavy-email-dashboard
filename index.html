@@ -83,29 +83,58 @@
   .meta { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
   .meta b { color: var(--ink); font-weight: 600; }
 
-  /* ---- Stat cards ---- */
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 26px; }
-  .card {
+  /* ---- Topline summary panels ---- */
+  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 28px; }
+  @media (max-width: 860px) { .panels { grid-template-columns: 1fr; } }
+  .panel {
     background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 14px 16px 12px;
+    overflow: hidden;
   }
-  .card .label {
-    font-size: 11px; font-weight: 600; letter-spacing: .08em;
+  .panel-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 12px 16px 10px; border-top: 4px solid var(--pcolor);
+    border-bottom: 1px solid var(--line);
+  }
+  .panel-head h2 {
+    font-family: var(--display); font-weight: 700; font-size: 21px;
+    letter-spacing: .03em; text-transform: uppercase; color: var(--pcolor);
+  }
+  .panel-head .sub { font-size: 11px; color: var(--muted); font-weight: 500; }
+  .panel.sports        { --pcolor: #d31921; }
+  .panel.entertainment { --pcolor: #7038d6; }
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); }
+  .metric {
+    padding: 12px 16px 10px; border-bottom: 1px solid var(--paper);
+  }
+  .metric:nth-child(3n+1), .metric:nth-child(3n+2) { border-right: 1px solid var(--paper); }
+  .metric .label {
+    font-size: 10px; font-weight: 600; letter-spacing: .08em;
     text-transform: uppercase; color: var(--muted);
   }
-  .card .value {
-    font-family: var(--mono); font-weight: 600; font-size: 26px;
-    margin: 6px 0 4px; font-variant-numeric: tabular-nums;
+  .narrative {
+    padding: 12px 16px 14px; font-size: 13px; line-height: 1.55;
+    color: var(--ink); border-top: 1px solid var(--line); background: #fcfcfd;
+  }
+  .narrative b { font-weight: 600; }
+  .narrative .flag { color: var(--down); font-weight: 600; }
+  .metric .value {
+    font-family: var(--mono); font-weight: 600; font-size: 21px;
+    margin: 4px 0 3px; font-variant-numeric: tabular-nums;
   }
   .delta {
     display: inline-flex; align-items: center; gap: 4px;
-    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    font-family: var(--mono); font-size: 11px; font-weight: 500;
     padding: 1px 7px; border-radius: 99px;
   }
   .delta.up   { color: var(--up);   background: #e6f4ec; }
   .delta.down { color: var(--down); background: #f9e9e6; }
   .delta.flat { color: var(--muted); background: var(--paper); }
-  .card .vs { font-size: 11px; color: var(--muted); margin-left: 6px; }
+
+  .sectionhead {
+    font-family: var(--display); font-weight: 600; font-size: 17px;
+    letter-spacing: .05em; text-transform: uppercase; color: var(--muted);
+    margin: 0 0 10px;
+  }
 
   /* ---- Table ---- */
   .tablewrap { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); overflow-x: auto; }
@@ -168,7 +197,8 @@
 
 <main>
   <div class="meta" id="meta"></div>
-  <div class="cards" id="cards"></div>
+  <div class="panels" id="panels"></div>
+  <h3 class="sectionhead" id="detailshead">Campaign Details</h3>
   <div class="tablewrap">
     <table id="table" hidden>
       <thead><tr id="headrow"></tr></thead>
@@ -200,7 +230,6 @@
 
   function num(v) { return v.toLocaleString(); }
   function pct(v) { return (v * 100).toFixed(2) + '%'; }
-  function dstr(d) { return d.toISOString().slice(0, 10); }
 
   async function load(refresh = false) {
     $('#table').hidden = true;
@@ -208,9 +237,7 @@
     $('#state').innerHTML = '<div class="spin"></div>Pulling campaigns from Campaign Monitor…';
     $('#state').hidden = false;
 
-    const to = new Date();
-    const from = new Date(Date.now() - (2 * days - 1) * 86400000); // current + comparison window
-    const qs = new URLSearchParams({ from: dstr(from), to: dstr(to) });
+    const qs = new URLSearchParams({ days: String(days) });
     if (refresh) qs.set('refresh', '1');
 
     const headers = {};
@@ -231,34 +258,34 @@
     } catch (e) {
       $('#state').className = 'state error';
       $('#state').textContent = e.message;
-      $('#cards').innerHTML = '';
+      $('#panels').innerHTML = '';
       $('#meta').textContent = '';
     }
   }
 
   function render() {
     if (!data) return;
-    const cutoff = Date.now() - days * 86400000;
+    renderPanels();
     const inBrand = (c) => brand === 'all' || c.brand === brand;
-    const current = data.campaigns.filter((c) => inBrand(c) && new Date(c.sentDate).getTime() >= cutoff);
-    const previous = data.campaigns.filter((c) => inBrand(c) && new Date(c.sentDate).getTime() < cutoff);
-
-    renderMeta(current);
-    renderCards(agg(current), agg(previous));
+    const current = data.campaigns.filter((c) => inBrand(c) && c.period === 'current');
+    const previous = data.campaigns.filter((c) => inBrand(c) && c.period === 'previous');
+    renderMeta(current, previous);
+    $('#detailshead').textContent = 'Campaign Details' +
+      (brand === 'all' ? '' : ' — ' + (brand === 'sports' ? 'Heavy' : 'EntertainmentNow'));
     renderTable(current);
   }
 
   function agg(rows) {
     const t = rows.reduce((a, c) => {
       a.campaigns += 1; a.recipients += c.recipients; a.uniqueOpens += c.uniqueOpens;
-      a.clicks += c.clicks; a.unsubscribes += c.unsubscribes; return a;
-    }, { campaigns: 0, recipients: 0, uniqueOpens: 0, clicks: 0, unsubscribes: 0 });
+      a.clicks += c.clicks; a.unsubscribes += c.unsubscribes; a.bounces += c.bounces; return a;
+    }, { campaigns: 0, recipients: 0, uniqueOpens: 0, clicks: 0, unsubscribes: 0, bounces: 0 });
     t.openRate = t.recipients ? t.uniqueOpens / t.recipients : 0;
     t.ctr = t.recipients ? t.clicks / t.recipients : 0;
     return t;
   }
 
-  function deltaChip(cur, prev, isRate) {
+  function deltaChip(cur, prev, isRate, invert) {
     if (!prev && !cur) return '<span class="delta flat">—</span>';
     let txt, dir;
     if (isRate) {
@@ -271,32 +298,112 @@
       dir = ch > 0.5 ? 'up' : ch < -0.5 ? 'down' : 'flat';
       txt = (ch > 0 ? '▲ +' : ch < 0 ? '▼ ' : '') + ch.toFixed(1) + '%';
     }
+    if (invert) dir = dir === 'up' ? 'down' : dir === 'down' ? 'up' : 'flat';
     return `<span class="delta ${dir}">${txt}</span>`;
   }
 
-  function renderCards(cur, prev) {
-    const defs = [
-      { label: 'Campaigns sent', v: num(cur.campaigns),  d: deltaChip(cur.campaigns, prev.campaigns) },
-      { label: 'Total sends',    v: num(cur.recipients), d: deltaChip(cur.recipients, prev.recipients) },
-      { label: 'Open rate',      v: pct(cur.openRate),   d: deltaChip(cur.openRate, prev.openRate, true) },
-      { label: 'Total clicks',   v: num(cur.clicks),     d: deltaChip(cur.clicks, prev.clicks) },
-      { label: 'CTR',            v: pct(cur.ctr),        d: deltaChip(cur.ctr, prev.ctr, true) },
-    ];
-    $('#cards').innerHTML = defs.map((c) => `
-      <div class="card">
-        <div class="label">${c.label}</div>
-        <div class="value">${c.v}</div>
-        ${c.d}<span class="vs">vs prior ${days}d</span>
-      </div>`).join('');
+  function shortName(n) {
+    n = String(n || '').trim();
+    return n.length > 44 ? esc(n.slice(0, 42)) + '…' : esc(n);
   }
 
-  function renderMeta(current) {
+  // Auto-generated topline narrative, in the voice of the weekly report.
+  function narrative(curRows, prevRows, cur, prev) {
+    if (!curRows.length) return 'No campaigns sent in this period.';
+    const s = [];
+    const hasPrev = prevRows.length > 0;
+
+    // Sentence 1: volume + headline rates
+    const orPP = (cur.openRate - prev.openRate) * 100;
+    const ctrPP = (cur.ctr - prev.ctr) * 100;
+    function rateClause(label, val, pp) {
+      if (!hasPrev) return `${label} at <b>${pct(val)}</b>`;
+      if (Math.abs(pp) < 0.05) return `${label} steady at <b>${pct(val)}</b>`;
+      return `${label} ${pp > 0 ? 'up' : 'down'} <b>${Math.abs(pp).toFixed(2)}pp</b> at <b>${pct(val)}</b>`;
+    }
+    s.push(
+      `<b>${num(cur.campaigns)}</b> campaign${cur.campaigns === 1 ? '' : 's'} reached <b>${num(cur.recipients)}</b> inboxes, ` +
+      `with ${rateClause('open rate', cur.openRate, orPP)} and ${rateClause('CTR', cur.ctr, ctrPP)}.`
+    );
+
+    // Sentence 2: drivers - best open rate among meaningful-volume sends,
+    // plus the biggest click contributor.
+    const meaningful = curRows.filter((r) => r.recipients >= Math.max(100, (cur.recipients / cur.campaigns) * 0.25));
+    const pool = meaningful.length ? meaningful : curRows;
+    const bestOpen = [...pool].sort((a, b) => b.openRate - a.openRate)[0];
+    const bestClicks = [...curRows].sort((a, b) => b.clicks - a.clicks)[0];
+    if (bestOpen && bestClicks) {
+      if (bestOpen.id === bestClicks.id) {
+        s.push(`<b>${shortName(bestOpen.name)}</b> led on both engagement (${pct(bestOpen.openRate)} open rate) and clicks (${num(bestOpen.clicks)}).`);
+      } else {
+        s.push(
+          `<b>${shortName(bestOpen.name)}</b> led on engagement (${pct(bestOpen.openRate)} open rate), ` +
+          `while <b>${shortName(bestClicks.name)}</b> drove the most clicks (${num(bestClicks.clicks)}).`
+        );
+      }
+    }
+
+    // Sentence 3: flags worth an editor's attention.
+    const flags = [];
+    if (hasPrev && prev.unsubscribes >= 25 && cur.unsubscribes > prev.unsubscribes * 1.5) {
+      flags.push(`unsubscribes up ${(((cur.unsubscribes - prev.unsubscribes) / prev.unsubscribes) * 100).toFixed(0)}% (${num(cur.unsubscribes)})`);
+    }
+    if (hasPrev && orPP <= -1) flags.push(`open rate down ${Math.abs(orPP).toFixed(2)}pp`);
+    if (hasPrev && ctrPP <= -0.25) flags.push(`CTR down ${Math.abs(ctrPP).toFixed(2)}pp`);
+    if (cur.recipients && (cur.bounces / cur.recipients) > 0.02) {
+      flags.push(`bounce rate at ${pct(cur.bounces / cur.recipients)}`);
+    }
+    if (flags.length) s.push(`<span class="flag">Worth watching:</span> ${flags.join('; ')}.`);
+    if (!hasPrev) s.push('No sends in the prior period, so trend indicators are unavailable.');
+    return s.join(' ');
+  }
+
+  function renderPanels() {
+    const brands = [
+      { key: 'sports', title: 'Heavy', sub: 'Sports' },
+      { key: 'entertainment', title: 'EntertainmentNow', sub: 'Entertainment' },
+    ];
+    $('#panels').innerHTML = brands.map((b) => {
+      const curRows = data.campaigns.filter((c) => c.brand === b.key && c.period === 'current');
+      const prevRows = data.campaigns.filter((c) => c.brand === b.key && c.period === 'previous');
+      const cur = agg(curRows);
+      const prev = agg(prevRows);
+      const metrics = [
+        { label: 'Campaigns', v: num(cur.campaigns),  d: deltaChip(cur.campaigns, prev.campaigns) },
+        { label: 'Sends',     v: num(cur.recipients), d: deltaChip(cur.recipients, prev.recipients) },
+        { label: 'Open rate', v: pct(cur.openRate),   d: deltaChip(cur.openRate, prev.openRate, true) },
+        { label: 'Clicks',    v: num(cur.clicks),     d: deltaChip(cur.clicks, prev.clicks) },
+        { label: 'CTR',       v: pct(cur.ctr),        d: deltaChip(cur.ctr, prev.ctr, true) },
+        { label: 'Unsubs',    v: num(cur.unsubscribes), d: deltaChip(cur.unsubscribes, prev.unsubscribes, false, true) },
+      ];
+      return `
+      <div class="panel ${b.key}">
+        <div class="panel-head">
+          <h2>${b.title}</h2>
+          <span class="sub">${b.sub} · vs prior ${days} days</span>
+        </div>
+        <div class="metrics">
+          ${metrics.map((m) => `
+            <div class="metric">
+              <div class="label">${m.label}</div>
+              <div class="value">${m.v}</div>
+              ${m.d}
+            </div>`).join('')}
+        </div>
+        <div class="narrative">${narrative(curRows, prevRows, cur, prev)}</div>
+      </div>`;
+    }).join('');
+  }
+
+  function renderMeta(current, previous) {
     const age = data.cachedAt ? Math.round((Date.now() - data.cachedAt) / 60000) : 0;
+    const dropped = data.counts && data.counts.droppedForRateLimit;
     $('#meta').innerHTML =
-      `Showing <b>${current.length}</b> campaigns from the last <b>${days} days</b>` +
+      `<b>${current.length}</b> campaigns ${data.currentPeriod.from} → ${data.currentPeriod.to}` +
+      ` · compared against <b>${previous.length}</b> from ${data.previousPeriod.from} → ${data.previousPeriod.to}` +
       (brand !== 'all' ? ` · <b>${brand === 'sports' ? 'Heavy Sports' : 'EntertainmentNow'}</b>` : '') +
       ` · data ${data.fromCache ? `cached ${age || '<1'}m ago` : 'fetched just now'}` +
-      (data.truncated ? ' · <b style="color:var(--down)">window truncated at 250 campaigns — narrow the range</b>' : '');
+      (dropped ? ` · <b style="color:var(--down)">${dropped} campaigns sampled out to stay under the API rate limit — totals are partial; rates remain representative</b>` : '');
   }
 
   function renderTable(rows) {
