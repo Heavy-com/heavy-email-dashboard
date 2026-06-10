@@ -185,10 +185,9 @@
         <button data-b="sports" aria-pressed="false">Sports</button>
         <button data-b="entertainment" aria-pressed="false">Entertainment</button>
       </div>
-      <select id="period" aria-label="Period">
-        <option value="7">Last 7 full days</option>
-        <option value="14">Last 14 full days</option>
-        <option value="28" selected>Last 28 full days</option>
+      <select id="period" aria-label="View">
+        <option value="week" selected>Last 7 full days</option>
+        <option value="day">Yesterday vs same day last week</option>
       </select>
       <button class="btn" id="refresh">Refresh data</button>
     </div>
@@ -212,9 +211,40 @@
 (() => {
   const $ = (s) => document.querySelector(s);
   let brand = 'all';
-  let days = 28;
-  let data = null; // { campaigns, cachedAt, from, to, truncated }
+  let view = 'week'; // 'week' | 'day'
+  let data = null;   // { window, counts, campaigns, cachedAt }
   let sortKey = 'sentDate', sortDir = -1;
+
+  function shiftDate(ymd, deltaDays) {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d + deltaDays)).toISOString().slice(0, 10);
+  }
+  function weekdayName(ymd) {
+    return new Date(ymd + 'T12:00:00Z').toLocaleDateString(undefined, { weekday: 'long', timeZone: 'UTC' });
+  }
+  function prettyDate(ymd) {
+    return new Date(ymd + 'T12:00:00Z').toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  }
+
+  // Resolve the current/previous date ranges for the active view from the
+  // server's fixed 14-day window.
+  function periods() {
+    const end = data.window.to; // yesterday (last complete day)
+    if (view === 'day') {
+      const prev = shiftDate(end, -7); // same weekday last week
+      return {
+        cur: { from: end, to: end },
+        prev: { from: prev, to: prev },
+        vsLabel: `${weekdayName(end)} ${prettyDate(end)} vs ${prettyDate(prev)}`,
+      };
+    }
+    return {
+      cur: { from: shiftDate(end, -6), to: end },
+      prev: { from: shiftDate(end, -13), to: shiftDate(end, -7) },
+      vsLabel: 'vs prior 7 days',
+    };
+  }
+  function inRange(c, r) { return c.date >= r.from && c.date <= r.to; }
 
   const COLS = [
     { k: 'sentDate',   label: 'Sent',      l: true,  fmt: (v) => new Date(v).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) },
@@ -237,7 +267,7 @@
     $('#state').innerHTML = '<div class="spin"></div>Pulling campaigns from Campaign Monitor…';
     $('#state').hidden = false;
 
-    const qs = new URLSearchParams({ days: String(days) });
+    const qs = new URLSearchParams();
     if (refresh) qs.set('refresh', '1');
 
     const headers = {};
@@ -265,11 +295,12 @@
 
   function render() {
     if (!data) return;
-    renderPanels();
+    const p = periods();
+    renderPanels(p);
     const inBrand = (c) => brand === 'all' || c.brand === brand;
-    const current = data.campaigns.filter((c) => inBrand(c) && c.period === 'current');
-    const previous = data.campaigns.filter((c) => inBrand(c) && c.period === 'previous');
-    renderMeta(current, previous);
+    const current = data.campaigns.filter((c) => inBrand(c) && inRange(c, p.cur));
+    const previous = data.campaigns.filter((c) => inBrand(c) && inRange(c, p.prev));
+    renderMeta(current, previous, p);
     $('#detailshead').textContent = 'Campaign Details' +
       (brand === 'all' ? '' : ' — ' + (brand === 'sports' ? 'Heavy' : 'EntertainmentNow'));
     renderTable(current);
@@ -358,14 +389,14 @@
     return s.join(' ');
   }
 
-  function renderPanels() {
+  function renderPanels(p) {
     const brands = [
       { key: 'sports', title: 'Heavy', sub: 'Sports' },
       { key: 'entertainment', title: 'EntertainmentNow', sub: 'Entertainment' },
     ];
     $('#panels').innerHTML = brands.map((b) => {
-      const curRows = data.campaigns.filter((c) => c.brand === b.key && c.period === 'current');
-      const prevRows = data.campaigns.filter((c) => c.brand === b.key && c.period === 'previous');
+      const curRows = data.campaigns.filter((c) => c.brand === b.key && inRange(c, p.cur));
+      const prevRows = data.campaigns.filter((c) => c.brand === b.key && inRange(c, p.prev));
       const cur = agg(curRows);
       const prev = agg(prevRows);
       const metrics = [
@@ -380,7 +411,7 @@
       <div class="panel ${b.key}">
         <div class="panel-head">
           <h2>${b.title}</h2>
-          <span class="sub">${b.sub} · vs prior ${days} days</span>
+          <span class="sub">${b.sub} · ${p.vsLabel}</span>
         </div>
         <div class="metrics">
           ${metrics.map((m) => `
@@ -395,12 +426,14 @@
     }).join('');
   }
 
-  function renderMeta(current, previous) {
+  function renderMeta(current, previous, p) {
     const age = data.cachedAt ? Math.round((Date.now() - data.cachedAt) / 60000) : 0;
     const dropped = data.counts && data.counts.droppedForRateLimit;
+    const curRange = p.cur.from === p.cur.to ? p.cur.from : `${p.cur.from} → ${p.cur.to}`;
+    const prevRange = p.prev.from === p.prev.to ? p.prev.from : `${p.prev.from} → ${p.prev.to}`;
     $('#meta').innerHTML =
-      `<b>${current.length}</b> campaigns ${data.currentPeriod.from} → ${data.currentPeriod.to} (today's in-flight sends excluded)` +
-      ` · compared against <b>${previous.length}</b> from ${data.previousPeriod.from} → ${data.previousPeriod.to}` +
+      `<b>${current.length}</b> campaigns ${curRange} (today's in-flight sends excluded)` +
+      ` · compared against <b>${previous.length}</b> from ${prevRange}` +
       (brand !== 'all' ? ` · <b>${brand === 'sports' ? 'Heavy Sports' : 'EntertainmentNow'}</b>` : '') +
       ` · data ${data.fromCache ? `cached ${age || '<1'}m ago` : 'fetched just now'}` +
       (dropped ? ` · <b style="color:var(--down)">${dropped} campaigns sampled out to stay under the API rate limit — totals are partial; rates remain representative</b>` : '');
@@ -453,7 +486,7 @@
     document.body.dataset.brand = brand;
     render();
   }));
-  $('#period').addEventListener('change', (e) => { days = +e.target.value; load(); });
+  $('#period').addEventListener('change', (e) => { view = e.target.value; render(); });
   $('#refresh').addEventListener('click', () => load(true));
 
   load();

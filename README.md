@@ -6,16 +6,17 @@ the formal RPM & Email Group deliverable.
 
 ## What it does
 
-- Pulls all sent campaigns from Campaign Monitor for a selected window
-  (7 / 14 / 28 days) plus the preceding equal window for comparison
-- Classifies each campaign as **Sports (Heavy)** or **Entertainment
-  (EntertainmentNow)** by naming patterns; **AhoraMismo is excluded**
-- Summary cards with period-over-period deltas: campaigns, sends, open rate,
-  total clicks, CTR (Total Clicks / Recipients, matching the weekly tool)
-- Sortable per-campaign table; campaign names link to the web version
-- 15-minute server-side cache so the whole team can hammer it without
-  touching Campaign Monitor's ~1,000 calls/hour limit; "Refresh data"
-  bypasses the cache
+- Pulls one fixed window of data: the **last 14 complete days** (today's
+  in-flight sends always excluded). Both views are sliced from this single
+  dataset, so switching views costs zero API calls:
+  - **Last 7 full days** vs the prior 7 days
+  - **Yesterday** vs the same weekday last week (avoids weekday noise)
+- Classifies each campaign as **Heavy (Sports)** or **EntertainmentNow**
+  by naming patterns; **AhoraMismo is excluded**
+- Topline summary panels for both brands with WoW-style delta chips and an
+  auto-generated narrative (volume, headline rates, top performers, and
+  "worth watching" flags), then a sortable campaign detail table below.
+  CTR = Total Clicks / Recipients, matching the weekly tool.
 
 ## Deploy (same flow as the newsroom dashboards)
 
@@ -28,13 +29,13 @@ the formal RPM & Email Group deliverable.
    |---|---|
    | `CM_API_KEY` | Campaign Monitor API key (Account Settings → API keys) |
    | `CM_CLIENT_ID` | The shared Heavy/EntertainmentNow client ID |
-   | `DASHBOARD_PASSWORD` | *(optional)* any string — visitors will be prompted once per browser session |
+   | `REPORT_TIMEZONE` | *(optional)* IANA timezone defining "today"; defaults to `America/New_York`. Match your CM account timezone. |
+   | `DASHBOARD_PASSWORD` | *(optional)* any string — visitors prompted once per browser session |
 
 4. Deploy. Done — e.g. `heavy-email-dashboard.vercel.app`
 
 For tighter access control than `DASHBOARD_PASSWORD`, Vercel's built-in
-Deployment Protection (password / Vercel Authentication) also works and
-requires no code.
+Deployment Protection (password / Vercel Authentication) also works with no code.
 
 ## Customizing brand classification
 
@@ -42,25 +43,41 @@ Edit the patterns at the top of `api/campaigns.js`:
 
 ```js
 const EXCLUDE_PATTERNS = [ /ahora\s*mismo/i, /ahoramismo/i ];
-const ENTERTAINMENT_PATTERNS = [ /entertainment/i, /entnow/i, /^EN[\s\-_:]/ ];
+const ENTERTAINMENT_PATTERNS = [
+  /entertainment/i, /entnow/i,
+  /now!/i,                   // the "...Now!" newsletter family
+  /90s\s*tv\s*stars\s*now/i, // no exclamation mark on this one
+  /hgtv/i,                   // "HGTV News!" doesn't follow the convention
+];
 ```
 
-These are a starting guess — align them with the exact naming-pattern rules
-from the v6 weekly tool so the two always agree. Anything not excluded and
-not matching Entertainment is classified Sports.
+Anything not excluded and not matching Entertainment is classified Sports.
+
+## Rate-limit strategy (CM allows ~1,000 calls/hour)
+
+1. **Per-campaign summary cache**: summaries for campaigns sent >48h ago are
+   cached 6 hours; recent sends 15 minutes. Repeat loads are nearly free.
+2. **Whole-response cache**: 10 minutes; "Refresh data" bypasses it. The cache
+   key includes the window end date, so day rollover invalidates automatically.
+3. **Day-stratified sampling**: if the 14-day window somehow exceeds the
+   700-fresh-call budget, campaigns are sampled proportionally per day so every
+   date stays represented. The UI states exactly how many were sampled out and
+   that rates remain representative while totals are partial.
+
+## Tuning the narrative
+
+Flag thresholds live in `narrative()` in `index.html`: open rate −1pp,
+CTR −0.25pp, bounce rate 2%, unsubscribes +50% over prior period. Adjust to
+match what you'd actually flag in the weekly report.
 
 ## Notes & known limits
 
-- **Clicks field**: the dashboard uses the `Clicks` value from
-  `/campaigns/{id}/summary.json`. Verify against a known campaign that this
-  matches the "Total Clicks" figure the weekly tool uses from CSV exports —
-  if CM's summary turns out to report unique clicks instead, swap to summing
-  the `/campaigns/{id}/clicks.json` endpoint (noting that costs one extra
-  call per campaign).
-- **Cache**: in-memory per serverless instance, 15-min TTL. Cold starts mean
-  an occasional fresh pull; that's fine for the rate limit at this volume.
-- **250-campaign cap** per request window as a rate-limit guard. At your send
-  volume a 56-day window should fit comfortably; the UI warns if truncated.
+- **Clicks field**: uses `Clicks` from `/campaigns/{id}/summary.json`. Verify
+  against a known campaign that this matches the weekly tool's "Total Clicks"
+  from CSV exports; if CM's summary reports unique clicks instead, swap to
+  summing `/campaigns/{id}/clicks.json` (one extra call per campaign).
+- **Caches are in-memory** per serverless instance; a cold start re-pulls.
+  If cold-start latency on the first morning load becomes annoying, Vercel KV
+  is the upgrade path for a persistent summary cache.
 - **Subscriber counts / list stats** aren't included yet — easy add via
-  `GET /lists/{listId}/stats.json` if you want the list-directory numbers
-  from the weekly tool here too.
+  `GET /lists/{listId}/stats.json` if you want the list-directory numbers here.
