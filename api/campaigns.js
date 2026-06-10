@@ -1,8 +1,9 @@
 // api/campaigns.js
 // Vercel serverless function: pulls sent campaigns + per-campaign summaries
-// from Campaign Monitor and returns classified, ready-to-render rows.
+// from Campaign Monitor for an explicit current period AND the preceding
+// equal-length comparison period, tags each campaign, and returns both.
 //
-// Required environment variables (set in Vercel project settings):
+// Required environment variables:
 //   CM_API_KEY    - Campaign Monitor API key
 //   CM_CLIENT_ID  - Client ID (Heavy + EntertainmentNow share one)
 // Optional:
@@ -11,9 +12,7 @@
 const API = 'https://api.createsend.com/api/v3.3';
 
 // ---------------------------------------------------------------------------
-// BRAND CLASSIFICATION - edit these to match your campaign naming conventions.
-// A campaign is checked against EXCLUDE first, then ENTERTAINMENT.
-// Anything that doesn't match either is classified as Sports (Heavy).
+// BRAND CLASSIFICATION
 // ---------------------------------------------------------------------------
 const EXCLUDE_PATTERNS = [
   /ahora\s*mismo/i,
@@ -21,12 +20,11 @@ const EXCLUDE_PATTERNS = [
 ];
 
 const ENTERTAINMENT_PATTERNS = [
-  /entertainment/i,        // "Netflix Entertainment Now!", "EntertainmentNow", etc.
+  /entertainment/i,
   /entnow/i,
-  /now!/i,                 // the "...Now!" newsletter family (AGT Now!, Survivor Now!,
-                           // Hallmark Now!, Breaking News Now!, etc.)
-  /90s\s*tv\s*stars\s*now/i, // the one family member without the exclamation mark
-  /hgtv/i,                 // "HGTV News!" doesn't follow the Now! convention
+  /now!/i,                   // the "...Now!" newsletter family
+  /90s\s*tv\s*stars\s*now/i, // no exclamation mark on this one
+  /hgtv/i,                   // "HGTV News!" doesn't follow the Now! convention
 ];
 
 function classify(name, subject) {
@@ -37,12 +35,24 @@ function classify(name, subject) {
 }
 
 // ---------------------------------------------------------------------------
-// In-memory cache (per warm serverless instance). 15 minute TTL keeps us far
-// under Campaign Monitor's ~1,000 calls/hour limit even with heavy team use.
+// Rate-limit strategy. CM allows ~1,000 calls/hour. Two layers of defense:
+//
+// 1. Per-campaign summary cache. A summary for a campaign sent days ago
+//    barely changes, so it's cached for 6 hours; recent sends (opens/clicks
+//    still accruing) are cached for 15 minutes. Repeat loads and period
+//    switches cost almost nothing.
+// 2. A hard budget of fresh summary fetches per request. If the window
+//    needs more than the budget allows, campaigns are dropped from the
+//    MIDDLE of each period (newest + oldest kept) so BOTH periods stay
+//    represented, and the response says exactly how many were skipped.
 // ---------------------------------------------------------------------------
-const CACHE_TTL_MS = 15 * 60 * 1000;
-const MAX_CAMPAIGNS = 250; // safety cap on summary fetches per request
-const cache = new Map(); // key -> { ts, payload }
+const SUMMARY_BUDGET = 700;                  // max fresh summary calls per request
+const SUMMARY_TTL_RECENT = 15 * 60 * 1000;   // sent within last 48h
+const SUMMARY_TTL_SETTLED = 6 * 60 * 60 * 1000;
+const RESPONSE_TTL = 10 * 60 * 1000;         // whole-response cache
+
+const summaryCache = new Map(); // campaignId -> { ts, ttl, summary }
+const responseCache = new Map(); // key -> { ts, payload }
 
 function cmHeaders(apiKey) {
   return {
@@ -60,7 +70,6 @@ async function cmFetch(url, apiKey) {
   return r.json();
 }
 
-// CM SentDate looks like "2026-06-02 09:30" - normalize to a Date.
 function parseSentDate(s) {
   return new Date(String(s).replace(' ', 'T'));
 }
@@ -69,8 +78,9 @@ function fmtDate(d) {
   return d.toISOString().slice(0, 10);
 }
 
-// Fetch all sent campaigns in the window, paging as needed. Results come back
-// newest-first, so we stop paging once we pass the start of the window.
+// Fetch all sent campaigns from `from` to now, paging newest-first and
+// stopping once results pass the start of the window. Date filtering is also
+// done client-side so this works even if CM ignores the date params.
 async function fetchSentCampaigns(apiKey, clientId, from, to) {
   const out = [];
   let page = 1;
@@ -90,14 +100,25 @@ async function fetchSentCampaigns(apiKey, clientId, from, to) {
       }
       if (sent <= to) out.push(c);
     }
-    if (pastWindow) break;
+    if (pastWindow || results.length === 0) break;
     if (page >= (data.NumberOfPages || 1)) break;
     page += 1;
   }
   return out;
 }
 
-// Run async fn over items with limited concurrency (gentle on the rate limit).
+async function getSummary(apiKey, campaign) {
+  const id = campaign.CampaignID;
+  const hit = summaryCache.get(id);
+  if (hit && Date.now() - hit.ts < hit.ttl) return { summary: hit.summary, fresh: false };
+
+  const summary = await cmFetch(`${API}/campaigns/${id}/summary.json`, apiKey);
+  const ageMs = Date.now() - parseSentDate(campaign.SentDate).getTime();
+  const ttl = ageMs > 48 * 3600000 ? SUMMARY_TTL_SETTLED : SUMMARY_TTL_RECENT;
+  summaryCache.set(id, { ts: Date.now(), ttl, summary });
+  return { summary, fresh: true };
+}
+
 async function mapLimit(items, limit, fn) {
   const results = new Array(items.length);
   let next = 0;
@@ -112,6 +133,18 @@ async function mapLimit(items, limit, fn) {
   return results;
 }
 
+// Keep `keep` items from a list, dropping from the middle (newest-first input:
+// keeps the most recent and the oldest ends so period aggregates stay sane).
+function trimMiddle(list, keep) {
+  if (list.length <= keep) return { kept: list, dropped: 0 };
+  const head = Math.ceil(keep / 2);
+  const tail = keep - head;
+  return {
+    kept: [...list.slice(0, head), ...list.slice(list.length - tail)],
+    dropped: list.length - keep,
+  };
+}
+
 module.exports = async (req, res) => {
   try {
     const { CM_API_KEY, CM_CLIENT_ID, DASHBOARD_PASSWORD } = process.env;
@@ -124,47 +157,76 @@ module.exports = async (req, res) => {
       return res.status(401).json({ error: 'unauthorized' });
     }
 
-    // Date window. Defaults to the last 56 days (enough for 4-week trends
-    // plus the comparison period).
-    const to = req.query.to
-      ? new Date(`${req.query.to}T23:59:59`)
-      : new Date();
-    const from = req.query.from
-      ? new Date(`${req.query.from}T00:00:00`)
-      : new Date(Date.now() - 56 * 86400000);
-    if (isNaN(from) || isNaN(to) || from > to) {
-      return res.status(400).json({ error: 'Invalid from/to dates. Use YYYY-MM-DD.' });
-    }
+    const days = Math.min(Math.max(parseInt(req.query.days, 10) || 28, 1), 60);
 
-    const cacheKey = `${fmtDate(from)}|${fmtDate(to)}`;
+    // Explicit period boundaries, computed once, server-side.
+    const now = new Date();
+    const currentFrom = new Date(now.getTime() - days * 86400000);
+    const previousFrom = new Date(now.getTime() - 2 * days * 86400000);
+
+    const cacheKey = `d${days}`;
     const forceRefresh = req.query.refresh === '1';
-    const hit = cache.get(cacheKey);
-    if (hit && !forceRefresh && Date.now() - hit.ts < CACHE_TTL_MS) {
+    const hit = responseCache.get(cacheKey);
+    if (hit && !forceRefresh && Date.now() - hit.ts < RESPONSE_TTL) {
       return res.status(200).json({ ...hit.payload, cachedAt: hit.ts, fromCache: true });
     }
 
-    const sent = await fetchSentCampaigns(CM_API_KEY, CM_CLIENT_ID, from, to);
-    const capped = sent.slice(0, MAX_CAMPAIGNS);
+    const sent = await fetchSentCampaigns(CM_API_KEY, CM_CLIENT_ID, previousFrom, now);
 
-    const rows = await mapLimit(capped, 5, async (c) => {
+    // Classify, exclude AhoraMismo, and tag each campaign with its period.
+    const tagged = [];
+    for (const c of sent) {
       const brand = classify(c.Name, c.Subject);
-      if (brand === 'excluded') return null;
+      if (brand === 'excluded') continue;
+      const sentAt = parseSentDate(c.SentDate);
+      tagged.push({
+        raw: c,
+        brand,
+        sentAt,
+        period: sentAt >= currentFrom ? 'current' : 'previous',
+      });
+    }
 
-      const s = await cmFetch(`${API}/campaigns/${c.CampaignID}/summary.json`, CM_API_KEY);
+    // Budget fresh summary fetches fairly across BOTH periods so the
+    // comparison never silently collapses to zero.
+    const curList = tagged.filter((t) => t.period === 'current');
+    const prevList = tagged.filter((t) => t.period === 'previous');
+    const cachedCount = tagged.filter(
+      (t) => {
+        const h = summaryCache.get(t.raw.CampaignID);
+        return h && Date.now() - h.ts < h.ttl;
+      }
+    ).length;
+    const budget = SUMMARY_BUDGET + cachedCount; // cached fetches are free
+
+    let dropped = 0;
+    let curKept = curList, prevKept = prevList;
+    if (tagged.length > budget) {
+      const half = Math.floor(budget / 2);
+      const curShare = Math.min(curList.length, Math.max(half, budget - prevList.length));
+      const prevShare = budget - curShare;
+      const c = trimMiddle(curList, curShare);
+      const p = trimMiddle(prevList, prevShare);
+      curKept = c.kept; prevKept = p.kept;
+      dropped = c.dropped + p.dropped;
+    }
+
+    const toFetch = [...curKept, ...prevKept];
+    const rows = await mapLimit(toFetch, 5, async (t) => {
+      const { summary: s } = await getSummary(CM_API_KEY, t.raw);
       const recipients = s.Recipients || 0;
       const uniqueOpens = s.UniqueOpened || 0;
-      const totalOpens = s.TotalOpened || 0;
       const clicks = s.Clicks || 0;
-
       return {
-        id: c.CampaignID,
-        name: c.Name,
-        subject: c.Subject,
-        sentDate: parseSentDate(c.SentDate).toISOString(),
-        brand,
+        id: t.raw.CampaignID,
+        name: t.raw.Name,
+        subject: t.raw.Subject,
+        sentDate: t.sentAt.toISOString(),
+        period: t.period,
+        brand: t.brand,
         recipients,
         uniqueOpens,
-        totalOpens,
+        totalOpens: s.TotalOpened || 0,
         clicks,
         unsubscribes: s.Unsubscribed || 0,
         bounces: s.Bounced || 0,
@@ -176,14 +238,18 @@ module.exports = async (req, res) => {
     });
 
     const payload = {
-      from: fmtDate(from),
-      to: fmtDate(to),
-      totalSentInWindow: sent.length,
-      truncated: sent.length > MAX_CAMPAIGNS,
-      campaigns: rows.filter(Boolean),
+      days,
+      currentPeriod: { from: fmtDate(currentFrom), to: fmtDate(now) },
+      previousPeriod: { from: fmtDate(previousFrom), to: fmtDate(currentFrom) },
+      counts: {
+        current: curList.length,
+        previous: prevList.length,
+        droppedForRateLimit: dropped,
+      },
+      campaigns: rows,
     };
 
-    cache.set(cacheKey, { ts: Date.now(), payload });
+    responseCache.set(cacheKey, { ts: Date.now(), payload });
     return res.status(200).json({ ...payload, cachedAt: Date.now(), fromCache: false });
   } catch (err) {
     return res.status(502).json({ error: String(err.message || err) });
