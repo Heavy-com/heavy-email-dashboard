@@ -133,18 +133,6 @@ async function mapLimit(items, limit, fn) {
   return results;
 }
 
-// Keep `keep` items from a list, dropping from the middle (newest-first input:
-// keeps the most recent and the oldest ends so period aggregates stay sane).
-function trimMiddle(list, keep) {
-  if (list.length <= keep) return { kept: list, dropped: 0 };
-  const head = Math.ceil(keep / 2);
-  const tail = keep - head;
-  return {
-    kept: [...list.slice(0, head), ...list.slice(list.length - tail)],
-    dropped: list.length - keep,
-  };
-}
-
 module.exports = async (req, res) => {
   try {
     const { CM_API_KEY, CM_CLIENT_ID, DASHBOARD_PASSWORD } = process.env;
@@ -157,13 +145,13 @@ module.exports = async (req, res) => {
       return res.status(401).json({ error: 'unauthorized' });
     }
 
-    const days = Math.min(Math.max(parseInt(req.query.days, 10) || 28, 1), 60);
-
-    // ---- Period boundaries, by calendar date, ending on the last COMPLETE
-    // day. Today's in-flight sends are excluded so rates aren't dragged down
-    // by partial data. All math is done on date strings (YYYY-MM-DD) to match
-    // how Campaign Monitor reports SentDate (the client account's timezone).
-    // REPORT_TIMEZONE controls what counts as "today" (default Eastern).
+    // ---- Fixed data window: the last 14 COMPLETE days. This single pull
+    // serves both dashboard views with no extra API calls:
+    //   - Week view:  days 1-7 back (current) vs days 8-14 back (previous)
+    //   - Day view:   yesterday vs the same weekday last week (8 days back)
+    // Today's in-flight sends are always excluded. REPORT_TIMEZONE controls
+    // what counts as "today" (default Eastern).
+    const WINDOW_DAYS = 14;
     const tz = process.env.REPORT_TIMEZONE || 'America/New_York';
     const todayStr = new Intl.DateTimeFormat('en-CA', {
       timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
@@ -174,12 +162,10 @@ module.exports = async (req, res) => {
       return new Date(Date.UTC(y, m - 1, d + deltaDays)).toISOString().slice(0, 10);
     }
 
-    const currentTo = shiftDate(todayStr, -1);                // yesterday (last full day)
-    const currentFrom = shiftDate(currentTo, -(days - 1));    // inclusive
-    const previousTo = shiftDate(currentFrom, -1);            // inclusive
-    const previousFrom = shiftDate(currentFrom, -days);       // inclusive
+    const windowTo = shiftDate(todayStr, -1);                    // yesterday
+    const windowFrom = shiftDate(windowTo, -(WINDOW_DAYS - 1));  // 14 full days
 
-    const cacheKey = `d${days}|${currentTo}`;
+    const cacheKey = `w|${windowTo}`;
     const forceRefresh = req.query.refresh === '1';
     const hit = responseCache.get(cacheKey);
     if (hit && !forceRefresh && Date.now() - hit.ts < RESPONSE_TTL) {
@@ -189,55 +175,53 @@ module.exports = async (req, res) => {
     const sent = await fetchSentCampaigns(
       CM_API_KEY,
       CM_CLIENT_ID,
-      new Date(`${previousFrom}T00:00:00`),
-      new Date(`${currentTo}T23:59:59`)
+      new Date(`${windowFrom}T00:00:00`),
+      new Date(`${windowTo}T23:59:59`)
     );
 
-    // Classify, exclude AhoraMismo, and tag each campaign with its period by
-    // calendar send date. Anything sent today (or outside the window) is dropped.
+    // Classify, exclude AhoraMismo, keep only complete-day sends in window.
     const tagged = [];
     for (const c of sent) {
       const brand = classify(c.Name, c.Subject);
       if (brand === 'excluded') continue;
-      const sentDateStr = String(c.SentDate).slice(0, 10);
-      let period = null;
-      if (sentDateStr >= currentFrom && sentDateStr <= currentTo) period = 'current';
-      else if (sentDateStr >= previousFrom && sentDateStr <= previousTo) period = 'previous';
-      if (!period) continue;
-      tagged.push({
-        raw: c,
-        brand,
-        sentAt: parseSentDate(c.SentDate),
-        period,
-      });
+      const date = String(c.SentDate).slice(0, 10);
+      if (date < windowFrom || date > windowTo) continue;
+      tagged.push({ raw: c, brand, date, sentAt: parseSentDate(c.SentDate) });
     }
 
-    // Budget fresh summary fetches fairly across BOTH periods so the
-    // comparison never silently collapses to zero.
-    const curList = tagged.filter((t) => t.period === 'current');
-    const prevList = tagged.filter((t) => t.period === 'previous');
-    const cachedCount = tagged.filter(
-      (t) => {
-        const h = summaryCache.get(t.raw.CampaignID);
-        return h && Date.now() - h.ts < h.ttl;
-      }
-    ).length;
+    // Budget fresh summary fetches. If the 14-day window exceeds the budget,
+    // sample stratified BY DAY so every date stays proportionally represented
+    // (a middle-trim would hollow out the boundary between the two weeks).
+    const cachedCount = tagged.filter((t) => {
+      const h = summaryCache.get(t.raw.CampaignID);
+      return h && Date.now() - h.ts < h.ttl;
+    }).length;
     const budget = SUMMARY_BUDGET + cachedCount; // cached fetches are free
 
+    let kept = tagged;
     let dropped = 0;
-    let curKept = curList, prevKept = prevList;
     if (tagged.length > budget) {
-      const half = Math.floor(budget / 2);
-      const curShare = Math.min(curList.length, Math.max(half, budget - prevList.length));
-      const prevShare = budget - curShare;
-      const c = trimMiddle(curList, curShare);
-      const p = trimMiddle(prevList, prevShare);
-      curKept = c.kept; prevKept = p.kept;
-      dropped = c.dropped + p.dropped;
+      const byDay = new Map();
+      for (const t of tagged) {
+        if (!byDay.has(t.date)) byDay.set(t.date, []);
+        byDay.get(t.date).push(t);
+      }
+      // Proportional allocation with largest-remainder distribution.
+      const entries = [...byDay.entries()].map(([date, arr]) => {
+        const exact = (arr.length / tagged.length) * budget;
+        return { date, arr, base: Math.floor(exact), rem: exact - Math.floor(exact) };
+      });
+      let used = entries.reduce((s, e) => s + e.base, 0);
+      entries.sort((a, b) => b.rem - a.rem);
+      for (const e of entries) {
+        if (used >= budget) break;
+        if (e.base < e.arr.length) { e.base += 1; used += 1; }
+      }
+      kept = entries.flatMap((e) => e.arr.slice(0, e.base));
+      dropped = tagged.length - kept.length;
     }
 
-    const toFetch = [...curKept, ...prevKept];
-    const rows = await mapLimit(toFetch, 5, async (t) => {
+    const rows = await mapLimit(kept, 5, async (t) => {
       const { summary: s } = await getSummary(CM_API_KEY, t.raw);
       const recipients = s.Recipients || 0;
       const uniqueOpens = s.UniqueOpened || 0;
@@ -246,8 +230,8 @@ module.exports = async (req, res) => {
         id: t.raw.CampaignID,
         name: t.raw.Name,
         subject: t.raw.Subject,
+        date: t.date,
         sentDate: t.sentAt.toISOString(),
-        period: t.period,
         brand: t.brand,
         recipients,
         uniqueOpens,
@@ -263,12 +247,9 @@ module.exports = async (req, res) => {
     });
 
     const payload = {
-      days,
-      currentPeriod: { from: currentFrom, to: currentTo },
-      previousPeriod: { from: previousFrom, to: previousTo },
+      window: { from: windowFrom, to: windowTo },
       counts: {
-        current: curList.length,
-        previous: prevList.length,
+        total: tagged.length,
         droppedForRateLimit: dropped,
       },
       campaigns: rows,
