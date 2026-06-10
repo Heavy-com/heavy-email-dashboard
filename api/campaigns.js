@@ -78,17 +78,24 @@ function fmtDate(d) {
   return d.toISOString().slice(0, 10);
 }
 
-// Fetch all sent campaigns from `from` to now, paging newest-first and
-// stopping once results pass the start of the window. Date filtering is also
-// done client-side so this works even if CM ignores the date params.
+// Fetch all sent campaigns from `from` to `to`, paging newest-first and
+// stopping once results pass the start of the window.
+//
+// NOTE: Campaign Monitor's sentfromdate/senttodate parameters have ambiguous
+// boundary behavior (senttodate appears to be treated as midnight at the
+// START of that date, which would silently exclude the entire final day).
+// So the query bounds are padded by one day on each side, and the precise
+// inclusive filtering is done here, client-side.
 async function fetchSentCampaigns(apiKey, clientId, from, to) {
+  const queryFrom = fmtDate(new Date(from.getTime() - 86400000));
+  const queryTo = fmtDate(new Date(to.getTime() + 86400000));
   const out = [];
   let page = 1;
   for (;;) {
     const url =
       `${API}/clients/${clientId}/campaigns.json` +
       `?page=${page}&pagesize=1000&orderfield=date&orderdirection=desc` +
-      `&sentfromdate=${fmtDate(from)}&senttodate=${fmtDate(to)}`;
+      `&sentfromdate=${queryFrom}&senttodate=${queryTo}`;
     const data = await cmFetch(url, apiKey);
     const results = data.Results || [];
     let pastWindow = false;
